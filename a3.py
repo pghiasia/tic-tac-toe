@@ -239,47 +239,96 @@ def install_udp_middlebox_flow( source_dpid
                               , middlebox_dpid
                               , source_port
                               , destination_port):
-    # This is the function you will complete for part D of assignment 3.
-    #
-    # If you're confused or don't know how to get started think about a simple
-    # linear topology that you can create with mininet using the following
-    # command:
-    #   sudo mn --topo=linear,3 --controller=remote,ip=127.0.0.1,port=6633 --mac
-    # The topology will look like this:
-    #
-    #             2         2  3         2
-    #           s1 --------- s2 --------- s3
-    #          1|           1|           1|
-    #           |            |            |
-    #           h1           h2           h3
-    # 
-    # Where the numbers on the figures are the openflow port numbers. The
-    # switches will have the following DPIDs:
-    #   - s1: 1
-    #   - s2: 2
-    #   - s3: 3
-    # h1 will be our client, h2 will be the middlebox and h3 will be the
-    # server. Anytime you need to know the MAC or IP addresses of a host
-    # connected to a particular switch, you can get it using the
-    # get_host_mac_from_dpid and get_host_ip_from_dpid functions.
-    #
-    # Now that you have a simple test case you should think about what flow
-    # rules you need to steer the traffic along the path from h1 -> s1 -> s2 ->
-    # h2. Similar, but not identical, flow rules will be needed to steer the
-    # traffic from h2 -> s2 -> s3 -> h3 after it has been modified by the
-    # middlebox.
-    #
-    # Remember to use the helper functions that are provided in this file to do
-    # things like:
-    #   * Get paths from h1 to h2 and from h2 to h3
-    #   * Build a flow rule that matches on the right type of traffic
-    #   * Install your flow rules.
-    #   * Get information about links and port numbers.
-    # 
-    # But remember that your code had to work for _any loopfree_ topology so
-    # don't make it specific to this example!
-    print("Hello CS456 Student! You need to add code to this function "
-          "to complete part D of assignment 3!")
+    """
+    Installs OpenFlow rules to steer UDP traffic from client -> middlebox -> server.
+    
+    Parameters:
+        - source_dpid: DPID of the switch that the client host is attached to
+        - destination_dpid: DPID of the switch that the server host is attached to
+        - middlebox_dpid: DPID of the switch that the middlebox host is attached to
+        - source_port: Source UDP port of the traffic
+        - destination_port: Destination UDP port of the traffic
+    """
+    # Get the network topology graph
+    nx_graph = get_networkx_topology_graph()
+    
+    # Get MAC and IP addresses for client, middlebox, and server hosts
+    client_mac = get_host_mac_from_dpid(source_dpid)
+    client_ip = get_host_ip_from_dpid(source_dpid)
+    
+    middlebox_mac = get_host_mac_from_dpid(middlebox_dpid)
+    middlebox_ip = get_host_ip_from_dpid(middlebox_dpid)
+    
+    server_mac = get_host_mac_from_dpid(destination_dpid)
+    server_ip = get_host_ip_from_dpid(destination_dpid)
+    
+    # Find shortest path from client switch to middlebox switch
+    client_to_middlebox_path = get_shortest_path_between(nx_graph, source_dpid, middlebox_dpid)
+    
+    # Find shortest path from middlebox switch to server switch
+    middlebox_to_server_path = get_shortest_path_between(nx_graph, middlebox_dpid, destination_dpid)
+    
+    # Install flow rules for client -> middlebox path
+    # We match on client MAC/IP as source and server MAC/IP as destination
+    # The middlebox will receive packets destined for the server
+    for i in range(len(client_to_middlebox_path)):
+        current_switch = client_to_middlebox_path[i]
+        
+        # Determine input port
+        in_port = get_input_port(client_to_middlebox_path, current_switch)
+        
+        # Determine output port
+        if i == len(client_to_middlebox_path) - 1:
+            # Last switch in path, forward to middlebox host
+            out_port = get_host_port(current_switch)
+            # Match on client MAC/IP -> server MAC/IP
+            match = build_match_for(client_mac, server_mac, client_ip, server_ip,
+                                   source_port, destination_port, in_port)
+        else:
+            # Intermediate switch, forward to next switch in path
+            next_switch = client_to_middlebox_path[i + 1]
+            local_port, remote_port = get_ports_connecting(current_switch, next_switch)
+            out_port = local_port
+            # Match on client MAC/IP -> server MAC/IP
+            match = build_match_for(client_mac, server_mac, client_ip, server_ip,
+                                   source_port, destination_port, in_port)
+        
+        # Build and install flowmod
+        flowmod = build_openflow_flowmod(match, out_port)
+        install_flowmod_on_switch_with_dpid(flowmod, current_switch)
+    
+    # Install flow rules for middlebox -> server path
+    # The middlebox forwards packets with original headers (client -> server)
+    for i in range(len(middlebox_to_server_path)):
+        current_switch = middlebox_to_server_path[i]
+        
+        # Determine input port
+        if i == 0:
+            # First switch in path is the middlebox switch, packets come from middlebox host
+            in_port = get_host_port(middlebox_dpid)
+        else:
+            # Intermediate switches, packets come from previous switch
+            in_port = get_input_port(middlebox_to_server_path, current_switch)
+        
+        # Determine output port
+        if i == len(middlebox_to_server_path) - 1:
+            # Last switch in path, forward to server host
+            out_port = get_host_port(current_switch)
+            # Match on client MAC/IP -> server MAC/IP (middlebox forwards with original headers)
+            match = build_match_for(client_mac, server_mac, client_ip, server_ip,
+                                   source_port, destination_port, in_port)
+        else:
+            # Intermediate switch, forward to next switch in path
+            next_switch = middlebox_to_server_path[i + 1]
+            local_port, remote_port = get_ports_connecting(current_switch, next_switch)
+            out_port = local_port
+            # Match on client MAC/IP -> server MAC/IP
+            match = build_match_for(client_mac, server_mac, client_ip, server_ip,
+                                   source_port, destination_port, in_port)
+        
+        # Build and install flowmod
+        flowmod = build_openflow_flowmod(match, out_port)
+        install_flowmod_on_switch_with_dpid(flowmod, current_switch)
 
 def do_install():
     """
