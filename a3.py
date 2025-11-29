@@ -253,24 +253,40 @@ def install_udp_middlebox_flow( source_dpid
     nx_graph = get_networkx_topology_graph()
     
     # Get MAC and IP addresses for client, middlebox, and server hosts
-    client_mac = get_host_mac_from_dpid(source_dpid)
-    client_ip = get_host_ip_from_dpid(source_dpid)
+    client_mac = str(get_host_mac_from_dpid(source_dpid))
+    client_ip = str(get_host_ip_from_dpid(source_dpid))
     
-    middlebox_mac = get_host_mac_from_dpid(middlebox_dpid)
-    middlebox_ip = get_host_ip_from_dpid(middlebox_dpid)
+    middlebox_mac = str(get_host_mac_from_dpid(middlebox_dpid))
+    middlebox_ip = str(get_host_ip_from_dpid(middlebox_dpid))
     
-    server_mac = get_host_mac_from_dpid(destination_dpid)
-    server_ip = get_host_ip_from_dpid(destination_dpid)
+    server_mac = str(get_host_mac_from_dpid(destination_dpid))
+    server_ip = str(get_host_ip_from_dpid(destination_dpid))
+    
+    log.info(f"Installing middlebox flows:")
+    log.info(f"  Client: {client_ip} ({client_mac}) on switch {source_dpid}")
+    log.info(f"  Middlebox: {middlebox_ip} ({middlebox_mac}) on switch {middlebox_dpid}")
+    log.info(f"  Server: {server_ip} ({server_mac}) on switch {destination_dpid}")
+    log.info(f"  Ports: {source_port} -> {destination_port}")
     
     # Find shortest path from client switch to middlebox switch
     client_to_middlebox_path = get_shortest_path_between(nx_graph, source_dpid, middlebox_dpid)
+    log.info(f"  Client->Middlebox path: {client_to_middlebox_path}")
     
     # Find shortest path from middlebox switch to server switch
     middlebox_to_server_path = get_shortest_path_between(nx_graph, middlebox_dpid, destination_dpid)
+    log.info(f"  Middlebox->Server path: {middlebox_to_server_path}")
+    
+    # Find direct path from client to server (to ensure we block it)
+    direct_path = get_shortest_path_between(nx_graph, source_dpid, destination_dpid)
+    log.info(f"  Direct Client->Server path: {direct_path}")
+    
+    # Get all switches that need flow rules
+    all_switches_in_path = set(client_to_middlebox_path + middlebox_to_server_path)
     
     # Install flow rules for client -> middlebox path
     # We match on client MAC/IP as source and server MAC/IP as destination
     # The middlebox will receive packets destined for the server
+    # IMPORTANT: These rules must have high priority to override l2_learning
     for i in range(len(client_to_middlebox_path)):
         current_switch = client_to_middlebox_path[i]
         
@@ -282,8 +298,10 @@ def install_udp_middlebox_flow( source_dpid
             # Last switch in path, forward to middlebox host
             out_port = get_host_port(current_switch)
             # Match on client MAC/IP -> server MAC/IP
+            # This ensures packets destined for server go to middlebox instead
             match = build_match_for(client_mac, server_mac, client_ip, server_ip,
                                    source_port, destination_port, in_port)
+            log.info(f"  Installing rule on switch {current_switch}: client->server -> middlebox host (port {out_port})")
         else:
             # Intermediate switch, forward to next switch in path
             next_switch = client_to_middlebox_path[i + 1]
@@ -292,6 +310,7 @@ def install_udp_middlebox_flow( source_dpid
             # Match on client MAC/IP -> server MAC/IP
             match = build_match_for(client_mac, server_mac, client_ip, server_ip,
                                    source_port, destination_port, in_port)
+            log.info(f"  Installing rule on switch {current_switch}: client->server -> switch {next_switch} (port {out_port})")
         
         # Build and install flowmod
         flowmod = build_openflow_flowmod(match, out_port)
@@ -317,6 +336,7 @@ def install_udp_middlebox_flow( source_dpid
             # Match on client MAC/IP -> server MAC/IP (middlebox forwards with original headers)
             match = build_match_for(client_mac, server_mac, client_ip, server_ip,
                                    source_port, destination_port, in_port)
+            log.info(f"  Installing rule on switch {current_switch}: middlebox->server -> server host (port {out_port})")
         else:
             # Intermediate switch, forward to next switch in path
             next_switch = middlebox_to_server_path[i + 1]
@@ -325,10 +345,13 @@ def install_udp_middlebox_flow( source_dpid
             # Match on client MAC/IP -> server MAC/IP
             match = build_match_for(client_mac, server_mac, client_ip, server_ip,
                                    source_port, destination_port, in_port)
+            log.info(f"  Installing rule on switch {current_switch}: middlebox->server -> switch {next_switch} (port {out_port})")
         
         # Build and install flowmod
         flowmod = build_openflow_flowmod(match, out_port)
         install_flowmod_on_switch_with_dpid(flowmod, current_switch)
+    
+    log.info("Flow rules installed successfully!")
 
 def do_install():
     """
