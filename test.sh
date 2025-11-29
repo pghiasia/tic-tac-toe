@@ -40,16 +40,16 @@ $ofctl add-flow r2 \
     in_port=1,ip,nw_src=10.4.4.96,nw_dst=10.6.6.69,actions=mod_dl_src:0A:00:10:FE:00:02,mod_dl_dst:0A:00:0D:FE:00:02,output=2
 
 $ofctl add-flow s3 \
-    in_port=2,ip,nw_src=10.4.4.96,nw_dst=10.6.6.69,actions=mod_dc_src:0A:00:03:01:00:01,mod_dl_dst:CC:CC:CC:CC:CC:CC,output=1
+    in_port=2,ip,nw_src=10.4.4.96,nw_dst=10.6.6.69,actions=mod_dl_src:0A:00:03:01:00:01,mod_dl_dst:CC:CC:CC:CC:CC:CC,output=1
 
 $ofctl add-flow s3 \
-    in_port=1,ip,nw_src=10.6.6.69,nw_dst=10.4.4.96,actions=mod_dc_src:0A:00:0D:FE:00:02,mod_dl_dst:0A:00:10:FE:00:02,output=2
+    in_port=1,ip,nw_src=10.6.6.69,nw_dst=10.4.4.96,actions=mod_dl_src:0A:00:0D:FE:00:02,mod_dl_dst:0A:00:10:FE:00:02,output=2
 
 $ofctl add-flow r2 \
-    in_port=2,ip,nw_src=10.6.6.69,nw_dst=10.4.4.96,actions=mod_dc_src:0A:00:05:01:00:01,mod_dl_dst:0A:00:0C:FE:00:04,output=1
+    in_port=2,ip,nw_src=10.6.6.69,nw_dst=10.4.4.96,actions=mod_dl_src:0A:00:05:01:00:01,mod_dl_dst:0A:00:0C:FE:00:04,output=1
 
 $ofctl add-flow s2 \
-    in_port=4,ip,nw_src=10.6.6.69,nw_dst=10.4.4.96,actions=mod_dc_src:0A:00:0B:FE:00:02,mod_dl_dst:D0:D0:D0:D0:D0:D0,output=2
+    in_port=4,ip,nw_src=10.6.6.69,nw_dst=10.4.4.96,actions=mod_dl_src:0A:00:0B:FE:00:02,mod_dl_dst:D0:D0:D0:D0:D0:D0,output=2
 
 for switch in s1 s2 s3 r1 r2;
 do

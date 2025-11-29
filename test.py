@@ -102,7 +102,8 @@ def run():
     Bob.cmd( 'arp -s 10.4.4.14 0A:00:02:01:00:01 -i Bob-eth0' )
     Carol.cmd( 'arp -s 10.6.6.46 0A:00:03:01:00:01 -i Carol-eth0' )
     David.cmd( 'arp -s 10.4.4.28 0A:00:0B:FE:00:02 -i David-eth0' )
-
+    Bob.cmd( 'arp -s 10.4.4.96 D0:D0:D0:D0:D0:D0 -i Bob-eth0' )
+    David.cmd( 'arp -s 10.4.4.48 B0:B0:B0:B0:B0:B0 -i David-eth0' )
     # Open Mininet Command Line Interface
     CLI(net)
 
