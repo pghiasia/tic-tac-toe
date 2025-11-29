@@ -4,18 +4,21 @@ import socket as sock
 import logging as log
 import argparse
 import os
+import time
 
 from scapy.all import *
 
 class RawSocketListener():
     MAX_RECV_SIZE = 1024
+    DUPLICATE_WINDOW = 0.2  # Consider packets duplicates if received within 200ms
     def __init__(self, handler, middlebox_port, iface_name, blocked_keywords):
         self.handler = handler
         self.middlebox_port = middlebox_port
         self.iface_name = iface_name
         self.blocked_keywords = blocked_keywords
         self.listener = sock.socket(sock.AF_PACKET, sock.SOCK_RAW, sock.ntohs(0x0003))
-        self.processed_packets = set()  # Track processed packets to prevent loops
+        # Track processed packets with timestamps: {packet_id: timestamp}
+        self.processed_packets = {}
 
     def listen_forever(self):
         print(f"Listening on middlebox port {self.middlebox_port}")
@@ -79,25 +82,42 @@ def l2_handler(message, middlebox_port, iface_name, blocked_keywords, processed_
         if eth_frame[UDP].dport != middlebox_port:
             return  # Not for us, ignore
         
-        # Create a unique packet identifier to prevent processing the same packet twice
+        # Create a unique packet identifier based on 5-tuple + payload
+        # This identifies a specific packet instance, not just message content
         packet_id = (eth_frame[IP].src, eth_frame[IP].dst, 
                      eth_frame[UDP].sport, eth_frame[UDP].dport)
         if eth_frame.haslayer(Raw):
-            # Include payload hash to make it more unique
+            # Include payload hash to identify the exact packet
             import hashlib
             payload_hash = hashlib.md5(eth_frame[Raw].load).hexdigest()[:8]
             packet_id = packet_id + (payload_hash,)
+        else:
+            # No payload, use a placeholder
+            packet_id = packet_id + (None,)
         
-        # Check if we've already processed this packet (prevent loops)
+        current_time = time.time()
+        
+        # Check if we've seen this exact packet recently (within duplicate window)
+        # This prevents processing the same packet multiple times due to loops,
+        # but allows legitimate duplicate messages sent at different times
         if packet_id in processed_packets:
-            print(f"Ignoring duplicate packet (already processed)")
-            return
+            last_seen_time = processed_packets[packet_id]
+            time_since_last = current_time - last_seen_time
+            
+            if time_since_last < RawSocketListener.DUPLICATE_WINDOW:
+                # Same packet seen within duplicate window - ignore it
+                print(f"Ignoring duplicate packet (seen {time_since_last*1000:.1f}ms ago)")
+                return
+            # Otherwise, it's been long enough - treat as new packet (legitimate retransmission)
         
-        # Mark as processed
-        processed_packets.add(packet_id)
-        # Clean up old entries to prevent memory leak (keep last 100)
-        if len(processed_packets) > 100:
-            processed_packets.clear()
+        # Mark as processed with current timestamp
+        processed_packets[packet_id] = current_time
+        
+        # Clean up old entries (older than 1 second) to prevent memory leak
+        cutoff_time = current_time - 1.0
+        packets_to_remove = [pid for pid, ts in processed_packets.items() if ts < cutoff_time]
+        for pid in packets_to_remove:
+            del processed_packets[pid]
         
         print(f"Received a UDP packet with destination port {middlebox_port}")
         print(f"Packet from {eth_frame[IP].src}:{eth_frame[UDP].sport} to {eth_frame[IP].dst}:{eth_frame[UDP].dport}")
