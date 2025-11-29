@@ -15,6 +15,7 @@ class RawSocketListener():
         self.iface_name = iface_name
         self.blocked_keywords = blocked_keywords
         self.listener = sock.socket(sock.AF_PACKET, sock.SOCK_RAW, sock.ntohs(0x0003))
+        self.processed_packets = set()  # Track processed packets to prevent loops
 
     def listen_forever(self):
         print(f"Listening on middlebox port {self.middlebox_port}")
@@ -26,7 +27,7 @@ class RawSocketListener():
                 print("Shutting down!")
                 return None
 
-            self.handler(message, self.middlebox_port, self.iface_name, self.blocked_keywords)
+            self.handler(message, self.middlebox_port, self.iface_name, self.blocked_keywords, self.processed_packets)
 
 def load_blacklist(blacklist_path="blacklist.txt"):
     """
@@ -68,58 +69,82 @@ def load_blacklist(blacklist_path="blacklist.txt"):
         traceback.print_exc()
         return []
 
-def l2_handler(message, middlebox_port, iface_name, blocked_keywords):
+def l2_handler(message, middlebox_port, iface_name, blocked_keywords, processed_packets):
     eth_frame = Ether(message)
     # Check if it's a UDP packet with the correct destination port
     # Remove TTL check as it may vary depending on network path
     if eth_frame.haslayer(UDP) and eth_frame.haslayer(IP):
-        if eth_frame[UDP].dport == middlebox_port:
-            print(f"Received a UDP packet with destination port {middlebox_port}")
-            print(f"Packet from {eth_frame[IP].src}:{eth_frame[UDP].sport} to {eth_frame[IP].dst}:{eth_frame[UDP].dport}")
-            print(f"TTL: {eth_frame[IP].ttl}")
-            
-            # Extract payload
-            if not eth_frame.haslayer(Raw):
-                print("Packet has no payload, forwarding...")
-                # Forward packet even without payload
-                eth_frame[IP].ttl -= 1
-                eth_frame[IP].chksum = None
-                eth_frame[UDP].chksum = None
-                eth_frame[IP].len = None
-                eth_frame[UDP].len = None
-                eth_frame = Ether(bytes(eth_frame))
-                sendp(eth_frame, iface=iface_name)
-                return
-            
-            payload = eth_frame[Raw].load
-            payload_str = payload.decode("utf-8", errors='ignore')
-            print(f"Payload: {payload_str}")
-            print(f"Blocked keywords: {blocked_keywords}")
-            
-            # Check if payload contains any blocked keywords
-            should_block = False
-            matched_keyword = None
-            for keyword in blocked_keywords:
-                if keyword.lower() in payload_str.lower():
-                    should_block = True
-                    matched_keyword = keyword
-                    break
-            
-            if should_block:
-                print(f"BLOCKED: Packet contains blocked keyword '{matched_keyword}'. Dropping packet.")
-                return  # Drop the packet, don't forward
-            
-            # Packet is safe, forward it without modification
-            print(f"Packet is safe. Forwarding to destination: "
-                  f"{eth_frame[IP].dst}:{eth_frame[UDP].dport}")
+        # Only process packets destined for the middlebox port
+        # Ignore packets that are already being forwarded (destined for server)
+        if eth_frame[UDP].dport != middlebox_port:
+            return  # Not for us, ignore
+        
+        # Create a unique packet identifier to prevent processing the same packet twice
+        packet_id = (eth_frame[IP].src, eth_frame[IP].dst, 
+                     eth_frame[UDP].sport, eth_frame[UDP].dport)
+        if eth_frame.haslayer(Raw):
+            # Include payload hash to make it more unique
+            import hashlib
+            payload_hash = hashlib.md5(eth_frame[Raw].load).hexdigest()[:8]
+            packet_id = packet_id + (payload_hash,)
+        
+        # Check if we've already processed this packet (prevent loops)
+        if packet_id in processed_packets:
+            print(f"Ignoring duplicate packet (already processed)")
+            return
+        
+        # Mark as processed
+        processed_packets.add(packet_id)
+        # Clean up old entries to prevent memory leak (keep last 100)
+        if len(processed_packets) > 100:
+            processed_packets.clear()
+        
+        print(f"Received a UDP packet with destination port {middlebox_port}")
+        print(f"Packet from {eth_frame[IP].src}:{eth_frame[UDP].sport} to {eth_frame[IP].dst}:{eth_frame[UDP].dport}")
+        print(f"TTL: {eth_frame[IP].ttl}")
+        
+        # Extract payload
+        if not eth_frame.haslayer(Raw):
+            print("Packet has no payload, forwarding...")
+            # Forward packet even without payload
             eth_frame[IP].ttl -= 1
             eth_frame[IP].chksum = None
             eth_frame[UDP].chksum = None
             eth_frame[IP].len = None
             eth_frame[UDP].len = None
             eth_frame = Ether(bytes(eth_frame))
-            eth_frame.show2()
             sendp(eth_frame, iface=iface_name)
+            return
+        
+        payload = eth_frame[Raw].load
+        payload_str = payload.decode("utf-8", errors='ignore')
+        print(f"Payload: {payload_str}")
+        print(f"Blocked keywords: {blocked_keywords}")
+        
+        # Check if payload contains any blocked keywords
+        should_block = False
+        matched_keyword = None
+        for keyword in blocked_keywords:
+            if keyword.lower() in payload_str.lower():
+                should_block = True
+                matched_keyword = keyword
+                break
+        
+        if should_block:
+            print(f"BLOCKED: Packet contains blocked keyword '{matched_keyword}'. Dropping packet.")
+            return  # Drop the packet, don't forward
+        
+        # Packet is safe, forward it without modification
+        print(f"Packet is safe. Forwarding to destination: "
+              f"{eth_frame[IP].dst}:{eth_frame[UDP].dport}")
+        eth_frame[IP].ttl -= 1
+        eth_frame[IP].chksum = None
+        eth_frame[UDP].chksum = None
+        eth_frame[IP].len = None
+        eth_frame[UDP].len = None
+        eth_frame = Ether(bytes(eth_frame))
+        eth_frame.show2()
+        sendp(eth_frame, iface=iface_name)
 
 def main():
     parser = argparse.ArgumentParser(
